@@ -29,7 +29,6 @@ class Population:
         location = None
         self.name = "Anon"
         self.sample_size = 0
-        print "run init"
 
     def load(self,f):
         """
@@ -47,5 +46,16 @@ class Population:
         self.name, self.sample_size = line[0], int(line[1])
         self.location = [float(f) for f in line[2:]]
 
+    #the whole hashing thing is very hacky. The main idea here is that the
+    # the name of the population is its unique identifier, and we can load
+    # associated data from a file with it
+    def __hash__(self):
+        return self.name.__hash__()
 
+    def __eq__(self, other):
+        if hasattr(other, 'name'):
+            return self.name == other.name
+        else:
+            return self.name == other
+        
 
