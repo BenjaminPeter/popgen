@@ -104,6 +104,11 @@ class SFS():
         self._ns = None
         self._theta_h = None
 
+    def __getitem__(self,pos):
+        return self.sfs[pos]
+
+    def __setitem__(self,pos, data):
+        self.sfs[pos] = data
     def addSNP(self,snp):
         p = sum( snp )
         self.sfs[p] += 1
@@ -112,10 +117,13 @@ class SFS():
     @staticmethod
     def loadFromHaplotypes(h, **kwargs):
         """creates a new SFS from a haplotype object"""
+        raise ValueError("DONT USE")
         id, haplotypes = h._get_default_location(**kwargs)
-        nHap=len(haplotypes)
+        nHap = len(haplotypes)
 
         sfs=SFS(nHap)
+
+        """freqs here should become a freqTable object"""
         freqs=[]
 
         for i in id:
@@ -197,3 +205,5 @@ class SFS():
 
         self._td = ( self.Pi() - self.wattersons_theta() )/np.sqrt(vartD)
 
+    def __repr__(self):
+        print self.sfs

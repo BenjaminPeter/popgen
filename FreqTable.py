@@ -18,8 +18,11 @@ class FreqTable:
     def __getitem__(self,x):
         return self._data.__getitem__(x)
 
+    def __setitem__(self,*args):
+        return self._data.__setitem__(*args)
+
     def __len__(self):
-        return self._data.shape[1]
+        return self._data.shape[0]
 
     @staticmethod
     def load(pop_file,data_file):

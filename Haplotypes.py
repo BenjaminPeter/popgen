@@ -1,33 +1,87 @@
 #!/usr/bin/env python
 
-"""
-    this class characterizes a set of haplotypes in a single pop
-    it is intended for small to intermediate data sets,
-    such that all the haplotypes can be kept in memory
-    simultaneously
-
-    As a data structure, I'll use a np.array to store all the data,
-    For the genomic positions of the SNP, I'll use a 1D masked array
-    that has all SNP positions and a dict[genomic position in bp] -> snp id
-    for the recombination position of the SNP, I'll use a 1D masked array that has all SNP positions as a float
-    pos or position refers to the genomic position, while id refers
-    to the position in the array
-
-    data will encoeded MS style, i.e 0 for ancestral, 1,2,3 for 
-    derived alleles (support for 2,3 nyi). Bases i.e. ACGT will be
-    kept in a separate numpy array
-
-    haplotypes is a dict[individualID] = rows in array
-
-    other attributes:
-        polarized:      is the ancestral state known?
-
-
-"""
 
 import numpy as np
 from types import GeneratorType
 from SFS import SFS
+from FreqTable import FreqTable
+
+class BijectiveDict(dict):
+    """
+        bijective dict to handle stuff like id <==> position relation
+        not everything is implemented :(
+    """
+    def __init__(self, *args, **kwargs):
+        dict.__init__(self, *args, **kwargs)
+        class RevDict(dict):
+            def __init__(self, *args, **kwargs):
+                dict.__init__(self, *args, **kwargs)
+                self.isfloat = False
+            def f2s(self,f):
+                return "%2.10f"%f
+            def __getitem__(self,x):
+                if self.isfloat:
+                    x =  self.f2s(x)
+                return dict.__getitem__(self,x)
+                
+
+        self._r = RevDict()
+        self.isfloat = False
+        for k,v in self.items():
+            if isinstance(v, float):
+                self.isfloat = True
+                self.r.isfloat = True
+                self.r[self.f2s(v)] = k
+            else:
+                self.r[v] = k
+        
+        if self.isfloat:
+           for k in self:
+                self[k] = self[k]
+                
+            
+    def f2s(self,f):
+        return "%2.10f"%f
+
+    def s2f(self,s):
+        return float(s)
+
+    def clear(self):
+        self.r.clear()
+        dict.clear()
+
+    def __delitem__(self,x):
+        v = self[x]
+        dict.__delitem__(self,x)
+        self._r.__delitem__(v)
+
+    def __setitem__(self,x,y):
+        if self.isfloat:
+            y = self.f2s(y)
+            dict.__setitem__(self,x,y)
+            self._r.__setitem__(y,x)
+        else:
+            dict.__setitem__(self,x,y)
+            self._r.__setitem__(y,x)
+
+    def __getitem__(self,x):
+        if self.isfloat:
+            return self.s2f(dict.__getitem__(self,x))
+        else:
+            return dict.__getitem__(self,x)
+
+
+    @property
+    def r(self):
+        return self._r
+
+
+
+
+    
+
+
+
 
 class Coordinates:
     """class that manages the three different coordinate systems:
@@ -42,7 +96,7 @@ class Coordinates:
         pass
 
 class GenArray(np.ndarray):
-    """super simple subclass of np.array that accepts a generator for indexing stuff"""
+    """super simple subclass of np.array that accepts a generator for indexing stuff, currently not used, as way too slow"""
     def __getitem__(self,x):
         if type(x) is GeneratorType or type(x) is xrange:
             return np.ndarray.__getitem__(self,[i for i in x])
@@ -59,8 +113,29 @@ class GenArray(np.ndarray):
         else:
             return np.ndarray.__getitem__(self,x)
 
-class Haplotypes:
-    """ Haplotypes, refactored from mbsData"""
+class Haplotypes(object):
+    """
+        this class characterizes a set of haplotypes 
+        it is intended for small to intermediate data sets,
+        such that all the haplotypes can be kept in memory
+        simultaneously. This is the data structure that saves most of the information, vs the SFS, where the linkage information is lost and the FreqTable, where we care about many populations
+
+        As a data structure, I'll use a np.array to store all the data,
+        For the genomic positions of the SNP, I'll use a 1D masked array
+        that has all SNP positions and a dict[genomic position in bp] -> snp id
+        for the recombination position of the SNP, I'll use a 1D masked array that has all SNP positions as a float
+        pos or position refers to the genomic position, while id refers
+        to the position in the array
+
+        data will encoeded MS style, i.e 0 for ancestral, 1,2,3 for 
+        derived alleles (support for 2,3 nyi). Bases i.e. ACGT will be
+        kept in a separate numpy array
+
+        haplotypes is a dict[individualID] = rows in array
+        other attributes:
+            polarized:      is the ancestral state known?
+    """
+
     def __init__(self,file=None,verbose=False):
         """if file is given, it loads the file assuming mbs data"""
         """if verbose, some stuff is printed out"""
@@ -68,33 +143,120 @@ class Haplotypes:
         if file != None:
             self.read_mbs_file(file)
 
-        self._seg_sites = None
-        self._rec_sites = None
-        self._snp_dict = None
-        self._rec_dict = None
-        self._polarized = False
-        self._alleles = None
-        self._data = None
-        self.coordinateSystem = 0
+        self.reset()
 
         self.verbose = verbose
 
-    def n_hap(self):
-        return self._data.shape[0]
+    def __getitem__(self,*args):
+        """
+            access to data should be as follows:
+                - first coordinate is the SNP locations, using the 
+                current coordinate system
+                - second coordinate (if present) is the individuals
+                e.g. if the coordinate system is pos, then h[(3000,4000),(10,20)] should give all SNP betweehn position 3000 and 4000 from individuals with ids 10-19
 
-    def n_snp(self):
-        return self._data.shape[1]
+        """
+        id,haps = self._get_default(*args[0])
+        return self._data[haps][:,id]
+        
+    def reset(self):
+        """
+            this function clears all the data that is present in the
+            object, intended for cleaning up loading files, etc.
+        """
+        #dict id <=> genomic position in bp
+        self._seg_sites = BijectiveDict()
+        #dict id <=> genomic position in rec distance
+        self._rec_sites = BijectiveDict()
+
+        self.sfs = None
+        self._data = None
+
+
+        self._polarized = False
+        self._alleles = None
+
+        #dict hid <=> individual name
+        self.individual_names = BijectiveDict()
+
+        self._default_coordinate_system = 'id'
+        self._default_individual_selector = 'hid'
 
     def __len__(self):
         return self._data.shape[1]
 
-    def to_sfs(self, **kwargs):
-        sfs, freq = SFS.loadFromHaplotypes(self, **kwargs)
-        if len(kwargs) ==0:
-            self.sfs, self.freq = sfs, freq
-        return sfs
+    def _expand_tuple(self,t):
+        """
+            function used in location setters. If a tuple (start, end)
+            is passed, this function returns range (start,end)
+        """
+        return np.arange(t[0],t[1])
 
-    def _get_default_location(self,**kwargs):
+    def _get_default(self, *args, **kwargs):
+        print args[0]
+        if len(args)>0:
+            loc = self._get_default_location(args[0], **kwargs)
+        else:
+            loc = self._get_default_location(**kwargs)
+        print "LOC",loc, args[0]
+        if len(args)>1:
+            haps = self._get_default_individuals(args[1], **kwargs)
+        else:
+            haps = self._get_default_individuals(**kwargs)
+
+        return loc, haps
+
+
+    def _get_default_individuals(self, *args, **kwargs):
+        """
+            function to handle kwargs for individuals. If none are 
+            given, all individuals are used. Otherwise it takes a tuple
+            of populations and takes those individuals, or a bunch of
+            individual ids/names
+
+            supported keywords are:
+                pops: population objects on the current data set
+                hid: the haplotype ids (numbered from 0 to n)
+                name: the sample name of the samples, if defined
+        """
+
+        #the default here is to return all inds
+        haplotypes = np.arange( self.nHap )
+        if len(args)>0:
+            kwargs[self._default_individual_selector] = args[0]
+        if len(args)>1:
+            raise ValueError("Too many unnamed args")
+        keys = kwargs.keys()
+        if 'pops' in keys:
+            haplotypes = []
+            try:
+                for pop in kwargs['pops']:
+                    for sample in pop.samples:
+                        haplotypes.append(sample)
+            except:
+                for sample in kwargs['pops']:
+                    haplotypes.append(sample)
+
+
+        elif 'hid' in keys:
+            haplotypes=kwargs['hid']
+        elif 'name' in keys:
+            haplotypes=[self.individual_names.r[name] \
+                        for name in kwargs['name']]
+
+        if isinstance(haplotypes,tuple):
+            haplotypes = self._expand_tuple(haplotypes)
+
+        #I assume if the index doesn't have __len__, it is a single
+        #site, which is wrapped in a list here
+        try:
+            len(haplotypes)
+        except:
+            haplotypes = [haplotypes]
+        haplotypes=np.array(haplotypes)
+        return haplotypes
+
+    def _get_default_location(self,*args, **kwargs):
         """
             function to handle kwargs for locations. If none are given,
             statistics are calculated over the entire data set and
@@ -105,15 +267,21 @@ class Haplotypes:
                 list or array: these sites
                 slice: nyi
 
-            the function returns a generator to iterate over the
-            requested SNP, i.e. returns a generator that yields
-            the tuple (id, individuals)
+            supported keywords are:
+                id: the id'th SNP
+                pos: the genomic position is basepairs
+                rec: the genomic position in recomb. units
         """
 
+        if len(args)>0:
+            kwargs[self._default_coordinate_system] = args[0]
+        if len(args)>1:
+            raise ValueError("Too many unnamed args")
         keys = kwargs.keys()
-        if sum(('id' in keys,'pos' in keys, 'ref' in keys))>1:
-            raise ValueError("Error: multiples of if, pos and "+\
-                             "ref specified")
+
+        if sum(('id' in keys,'pos' in keys, 'rec' in keys))>1:
+            raise ValueError("Error: multiples of id, pos and "+\
+                             "rec specified")
         elif sum(('id' in keys,'pos' in keys, 'rec' in keys)) == 1:
             if 'pos' in keys:
                 cType = 'pos'
@@ -121,6 +289,7 @@ class Haplotypes:
                 cType = 'rec'
             else:
                 cType = 'id'
+            print "ctype", cType
             coords = kwargs[cType]
         else:
             if 'singleSite' in kwargs and kwargs['singleSite']:
@@ -130,60 +299,26 @@ class Haplotypes:
             cType = 'id'
 
 
-        #if it is a tuple
-        if type(coords) is tuple:
-            if cType == 'pos':
-                coords =(self.get_closest_SNP_from_pos(coords[0],1),
-                     self.get_closest_SNP_from_pos(coords[1],-1))
-            elif cType == 'rec':
-                coords =(self.get_closest_SNP_from_rec(coords[0],1),
-                     self.get_closest_SNP_from_rec(coords[1],-1))
-            def generator():
-                for i in xrange(coords[0],coords[1]):
-                    yield i
+        if isinstance(coords,tuple):
+            coords = self._expand_tuple(coords)
 
-        #for a list, we assume that only the specific snp that
-        #       are actually needed are passed
-        elif type(coords) is list or  type(coords) is np.ndarray \
-                or type(coords) is GeneratorType:
-            if cType == 'pos':
-                coords = [ self._snp_dict[i] for i in coords \
-                          if i in self._snp_dict ]
-            elif cType =='rec':
-                coords = [ self._rec_dict[i] for i in coords \
-                          if i in self._rec_dict ]
+        #I assume if the index doesn't have __len__, it is a single
+        #site, which is wrapped in a list here
+        try:
+            len(coords)
+        except:
+            coords = [coords]
+        coords = np.array(coords)
 
-            def generator():
-                for i in coords:
-                    yield i
+        if cType == 'pos':
+            pass
 
-        #if it is only one site...:
-        else:
-            if cType == 'pos':
-                coords = self._snp_dict[coords]
-            elif cType =='rec':
-                coords = self._rec_dict[coords]
-            def generator():
-                yield coords
-                
+        return coords
 
-        #------------------ the haplotypes and individuals --------
-        if 'haplotypes' in keys:
-            if 'derivedOnly' in keys and keys['derivedOnly']:
-                haplotypes = self.get_haplotypes_with_derived_allel(id=id)
-            else:
-                haplotypes=kwargs['haplotypes']
-        else:
-            haplotypes=np.arange(self.n_hap())
-        haplotypes=np.array(haplotypes)
-            
-        id = [i for i in generator()]
 
-        return id, haplotypes
-
-    def get_SNP_data(self, **kwargs):
+    def get_SNP_data(self, *args, **kwargs):
         """get the SNP data from either a position(default) or ID"""
-        id,haps  = self._get_default_location(singleSite=True, **kwargs)
+        id,haps = self._get_default(singleSite=True, *args, **kwargs)
         return self._data[haps][:,id]
 
     def set_selected_site(self,**kwargs):
@@ -192,18 +327,10 @@ class Haplotypes:
             The main effect of this is for default behaviour of
             statistic when nothing else is declared
         """
-        id,_ = self._get_default_location(singleSite=True,**kwargs)
+        id = self._get_default_location(singleSite=True,**kwargs)
         self.sel_id=id
         self.sel_pos=self._seg_sites[id]
-        self.selSiteData=self.get_SNP_data(self.sel_id)
-
-    def init_SNP_dict(self):
-        """creates the dictionary that maps positions to the corresponding ids"""
-        if self._seg_sites is None:
-            raise ValueError("tried to calculate SNP dict, but seg sites are not defined")
-        self._snp_dict = dict()
-        for i,s in enumerate( self._seg_sites ):
-            self._snp_dict[ s ] = i
+        self.selSiteData=self.get_SNP_data(id = self.sel_id)
 
     def get_closest_SNP_from_pos(self,pos,direction=0):
         """gives a SNP close to the position. If direction==None or direction
@@ -221,7 +348,7 @@ class Haplotypes:
             pass
 
         #do binary search: O(lg n)
-        segs= self._seg_sites
+        segs= self._seg_sites.values()
         l = len(segs)
         while l>1:
             pivot = l/2
@@ -260,7 +387,7 @@ class Haplotypes:
         """returns  a tuple with first element being starting and 
         ending position and then the seq
         """
-        id,haplotypes = self._get_default_location(**kwargs)
+        id,haplotypes = self._get_default(**kwargs)
         return np.array([self._seg_sites[i] for i in id])
 
     def get_haplotypes_with_derived_allel(self,**kwargs):
@@ -277,11 +404,44 @@ class Haplotypes:
         """gets all the haplotypes in the sample"""
         return np.arange(self.n_hap())
 
+    @property
+    def default_coordinate_system(self):
+        return self._default_coordinate_system
+
+    @default_coordinate_system.setter
+    def default_coordinate_system(self, value):
+        if value not in ("id","rec","pos"):
+            raise ValueError("Tried to set coordinate"+\
+                             " system to %s"%value)
+        self._default_coordinate_system = value
+
+    @property
+    def default_individual_selector(self):
+        return self._default_individual_selector
+
+    @default_individual_selector.setter
+    def default_individual_selector(self, value):
+        if value not in ("hid","pop","name"):
+            raise ValueError("Tried to set selector"+\
+                             " system to %s"%value)
+        self._default_individual_selector = value
+
+
+    @property
+    def n_hap(self):
+        """returns the number of haplotypes in the data set"""
+        return self._data.shape[0]
+
+    @property
+    def n_snp(self):
+        """returns the number of SNP in the data sets"""
+        return self._data.shape[1]
+
 #-----------------------------IHS/EHH----------------------------
     def _unique_haplotypes(self,data=None,**kwargs):
         """for the data given in data, computes the unique haplotype, returns a dict"""
         if data==None:
-            id,haplotypes=self._get_default_location(**kwargs)
+            id,haplotypes=self._get_default(**kwargs)
             data=self._data[haplotypes,:][:,id]
 
         nHap=data.shape[0]
@@ -329,7 +489,7 @@ class Haplotypes:
                 - haplotypes: if only a subset of haplotypes should be used:
                     default=all haplotypes
                     - verbose: adds some output"""
-        id,haplotypes=self._get_default_location(singleSite=True, **kwargs)
+        id,haplotypes=self._get_default(singleSite=True, **kwargs)
 
         ehh=[]
         if isinstance(x,tuple) or isinstance(x,np.ndarray):
@@ -376,7 +536,7 @@ class Haplotypes:
             - interpolation = if true, the interpolation by Voight et al. is used, if false, a step function more appropriate for sequence data is used
             -maxDist: the maximal distance to integrate to
         """
-        id,haplotypes=self._get_default_location(singleSite=True, **kwargs)
+        id,haplotypes=self._get_default(singleSite=True, **kwargs)
 
         if(len(id)==1): id = id[0]
         ind=haplotypes 
@@ -455,7 +615,7 @@ class Haplotypes:
                       **kwargs):
         """gets the integrated IHS for all the haplotypes, ignoring
         ancestral/derived alleles"""
-        id,haplotypes = self._get_default_location(singleSite=True,
+        id,haplotypes = self._get_default(singleSite=True,
                                                   **kwargs)
         ihs,dmin                =       self._integrate_EHH(id,haplotypes,-1,threshold,
                                                            maxDist,interpolation,verbose)
@@ -476,7 +636,7 @@ class Haplotypes:
 
         if noAncDer:
             return self.IHS_no_anc_der(threshold,verbose,interpolation,**kwargs)
-        id,haplotypes = self._get_default_location(singleSite=True, **kwargs)
+        id,haplotypes = self._get_default(singleSite=True, **kwargs)
 
         iAnc = self.get_haplotypes_with_ancestral_allel(id=id)
         iDer = self.get_haplotypes_with_derived_allel(id=id)
@@ -515,7 +675,7 @@ class Haplotypes:
 
     def XPEHH(self,x,interpolation=False,verbose=False, **kwargs):
         """untested"""
-        id,haplotypes = self._get_default_location(singleSite=True, **kwargs)
+        id,haplotypes = self._get_default(singleSite=True, **kwargs)
 
         iPop0 = np.where(self.pops==0)[0]
         iPop1 = np.where(self.pops==1)[0]
@@ -534,7 +694,7 @@ class Haplotypes:
 #-----------------------------Heterozygosity----------------------------
     def get_SFS(self,**kwargs):
         """avoid double computing global sfs"""
-        id,haplotypes=self._get_default_location(**kwargs)
+        id,haplotypes=self._get_default(**kwargs)
         if len(id) == self.n_snp() and len(haplotypes) == self.n_hap():
             if self.sfs is None:
                 self.sfs = self.make_SFS()
@@ -557,13 +717,12 @@ class Haplotypes:
 
 #----------------------------Singletons/sfs--------------------------
     def make_SFS(self,**kwargs):
-        id,haplotypes=self._get_default_location(**kwargs)
+        id,haplotypes=self._get_default(**kwargs)
 
 
         nHap=len(haplotypes)
-        sfs,freqs = SFS.loadFromHaplotypes(self)
-        sfs=np.zeros(nHap+1)
-        freqs=np.zeros(self.nSegsites,dtype=float)
+        sfs = SFS(nHap)
+        freqs = FreqTable(n_snp=len(id), sample_sizes=[nHap])
 
         for i in np.array(id):
             snp=self.get_SNP_data(id=i,haplotypes=haplotypes)
@@ -571,7 +730,7 @@ class Haplotypes:
             sfs[p] += 1
             freqs[i] = float(p)
 
-        sfs=sfs[1:nHap]
+        #sfs=sfs[1:nHap]
         
         return sfs,freqs
 
@@ -596,7 +755,8 @@ class Haplotypes:
         if hasattr(self,"_rec_dict"):
             del self._rec_dict 
             
-        del self.sfs, self.freqs
+        self.sfs = None
+        self.freqs = None
 
     def Fay_Wu_H(self,requirePolarizedData=False,**kwargs):
         sfs = self.get_SFS(**kwargs)
@@ -664,32 +824,6 @@ class Haplotypes:
         else:
             raise ValueError("Method for this input type not yet implemented")
 
-        if hasattr(self,"pi"):
-            del self.pi
-
-
-        if hasattr(self,"td"):
-            del self.td
-
-        if hasattr(self,"fwh"):
-            del self.fwh
-
-        if hasattr(self,"sfs"):
-            del self.sfs
-
-        if hasattr(self,"ihs"):
-            del self.ihs
-
-        if hasattr(self,"ehh"):
-            del self.ehh
-
-        if hasattr(self,"setSFS"):
-            del self.setSFS
-
-        if hasattr(self,"freqs"):
-            del self.freqs
-
-        self.init_SNP_dict()
         self.currDataSet += 1
 
     def read_next_mbs_data_set(self): 
@@ -705,16 +839,10 @@ class Haplotypes:
 
         self.selId = sum(np.less(self._seg_sites, self.selPos))
         self._seg_sites.insert(self.selId,self.selPos)
+        self._seg_sites = BijectiveDict((i,s) for i,s in enumerate(self._seg_sites))
 
         self._data = np.zeros((self.nHap,self.nSegsites),dtype="bool")
         #self._data=self._data.view(GenArray)
-        #self._data[:,0]=[int(i) for i in self._seg_sites]
-        if len(np.unique(self._seg_sites)) != len(self._seg_sites):
-            #print "correcting",
-            for i,s in enumerate(self._seg_sites):
-                if sum(s==np.array(self._seg_sites))>1:
-                    #print self._seg_sites[i]
-                    self._seg_sites[i+1]+=1
         c=0
         while 1:
             buf=self.file.readline()
@@ -725,8 +853,6 @@ class Haplotypes:
             s.insert(self.selId,self.selSiteData[c])
             self._data[c,:]=s
             c=c+1
-
-        self._seg_sites = np.array(self._seg_sites)
 
     def read_mbs_file(self,file):
         """reads output from MBS"""
@@ -781,6 +907,7 @@ class Haplotypes:
         self._data=np.zeros((self.nHap,self.nSegsites),dtype="b")
         #self._data=self._data.view(GenArray)
         self._seg_sites   = np.arange(self.nSegsites,dtype="f")/self.nSegsites
+        self._seg_sites = BijectiveDict((i,s) for i,s in enumerate(self._seg_sites))
 
         i = 0 
         while i<self.nSegsites:
@@ -816,27 +943,15 @@ class Haplotypes:
 
         self.read_next_data_set()
 
+
     def read_next_ms_data_set(self):
-        if hasattr(self,"data"):
-            del self._data
-        if hasattr(self,"segSites"):
-            del self._seg_sites
-        if hasattr(self,"nSegSites"):
-            del self.nSegsites
-        if hasattr(self,"SNPdict"):
-            del self._snp_dict
-        if hasattr(self,"selId"):
-            del self.selId
-        if hasattr(self,"selPos"):
-            del self.selPos
-        if hasattr(self,"selSiteData"):
-            del self.selSiteData
+        self.reset()
         while 1:
             buf=self.file.readline()
             if buf[0:8]=="segsites":
                 buf=buf.split()
                 self.nSegsites=int(float(buf[1]))
-                print self.nSegsites
+        #        print self.nSegsites
                 break
             if buf == '':
                 raise ValueError("could not read input file: number of\
@@ -847,6 +962,7 @@ class Haplotypes:
         #check if all segregating sites are unique, otherwise it will not work:
         if len(np.unique(self._seg_sites)) != len(self._seg_sites):
                raise ValueError("some segregating sites have the same index//ms")
+        self._seg_sites = BijectiveDict((i,s) for i,s in enumerate(self._seg_sites))
 
         #prepare Data
         self._data = np.zeros((self.nHap,self.nSegsites),dtype="int")
@@ -860,11 +976,11 @@ class Haplotypes:
 
             buf = buf.strip()
             s = [int(buf[i]) for i in range(len(buf))]
-            print len(s)
+        #    print len(s)
             self._data[c,:]=s
             c=c+1
 
-        self.setSelectedSite(pos=.5)
+        #self.set_selected_site(pos=.5)
 
     def write_to_ms(self,file=None,data=None,segSites=None,par=None,selSiteInData=True):
         """if selSiteInData, the selected Site is writen into the data portion
@@ -877,7 +993,7 @@ class Haplotypes:
             if hasattr(self,"chr"): dummy="chr"+self.chr
             par=(nHap,self.parTheta,self.parRho,self.nDataSets,self.length,self.selPos,dummy)
         if segSites == None: 
-            segSites = self._seg_sites
+            segSites = self._seg_sites.values()
 
         nSNP=len(segSites)
 
@@ -941,7 +1057,7 @@ class Haplotypes:
             if hasattr(self,"chr"): dummy="chr"+self.chr
             par=(nHap,self.parTheta,self.parRho,self.nDataSets,self.length,self.selPos,dummy)
         if segSites == None: 
-            segSites = self._seg_sites
+            segSites = self._seg_sites.values()
 
         nSNP=len(segSites)
 
@@ -1581,7 +1697,7 @@ class Haplotypes:
         """gets a subset of the data as a new mbsData object. if setNewSelSite
         is true, if the selected Site is not in the subset, the next best site
         is put as selected site"""
-        pos,id,haplotypes=self._get_default_location(pos,id,haplotypes)
+        pos,id,haplotypes=self._get_default(pos, id, haplotypes)
 
         if isinstance(id,tuple):
             id=np.arange(id[0],id[1]+1)

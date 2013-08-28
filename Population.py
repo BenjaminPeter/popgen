@@ -13,6 +13,7 @@ class Population:
         id: identifier
         name: name of pop
         sample_size: number of sampled haplotypes
+        samples: a list with the ids of the samples
     """
 
     pop_counter = 0 
