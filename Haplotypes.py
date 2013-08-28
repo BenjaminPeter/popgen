@@ -6,74 +6,105 @@ from types import GeneratorType
 from SFS import SFS
 from FreqTable import FreqTable
 
-class BijectiveDict(dict):
+class Coords(object):
     """
-        bijective dict to handle stuff like id <==> position relation
-        not everything is implemented :(
+        handles stuff like id <==> position relation
     """
-    def __init__(self, *args, **kwargs):
-        dict.__init__(self, *args, **kwargs)
-        class RevDict(dict):
-            def __init__(self, *args, **kwargs):
-                dict.__init__(self, *args, **kwargs)
-                self.isfloat = False
-            def f2s(self,f):
-                return "%2.10f"%f
-            def __getitem__(self,x):
-                if self.isfloat:
-                    x =  self.f2s(x)
-                return dict.__getitem__(self,x)
-                
-
-        self._r = RevDict()
-        self.isfloat = False
-        for k,v in self.items():
-            if isinstance(v, float):
-                self.isfloat = True
-                self.r.isfloat = True
-                self.r[self.f2s(v)] = k
+    class RevDict(object):
+        def __init__(self, parent):
+            self.d = dict()
+            self.parent = parent
+        def __getitem__(self,x):
+            if isinstance(x,slice):
+                print x.start, x.stop
+                id0 = self.get_closest_SNP_from_pos(x.start,1)
+                id1 = self.get_closest_SNP_from_pos(x.stop,-1)
+                return np.arange(id0,id1)
+            elif isinstance(x,tuple):
+                id0 = self.get_closest_SNP_from_pos(x[0],1)
+                id1 = self.get_closest_SNP_from_pos(x[1],-1)
+                return np.arange(id0,id1)
+            elif isinstance(x,list) or isinstance(x,np.ndarray):
+                results = [self.get_closest_SNP_from_pos(i) for i in x ]
+                return np.array(results)
             else:
-                self.r[v] = k
-        
-        if self.isfloat:
-           for k in self:
-                self[k] = self[k]
-                
-            
-    def f2s(self,f):
-        return "%2.10f"%f
+                id = self.get_closest_SNP_from_pos(x)
+                return np.array([id])
+        def __setitem__(self,x,y):
+            self.d.__setitem__(x,y)
 
-    def s2f(self,s):
-        return float(s)
+        def get_closest_SNP_from_pos(self,pos,direction=0):
+            """gives a SNP close to the position. If direction==None or direction
+            ==0, the closest SNP
+            is returned. is direction==1, the next larger SNP is returned, if
+            direction== =1, the next SNP with lower position is returned """
 
-    def clear(self):
-        self.r.clear()
-        dict.clear()
+            try:
+                s = self.d[pos]
+                return s
+            except:
+                pass
 
-    def __delitem__(self,x):
-        v = self[x]
-        dict.__delitem__(self,x)
-        self._r.__delitem__(v)
+            #do binary search: O(lg n)
+            segs= self.parent.f
+            l = len(segs)
+            while l>1:
+                pivot = l/2
+                if pos> segs[pivot]: 
+                    segs = segs[pivot:]
+                else:
+                    segs = segs[:pivot]
+                l= len(segs)
+            lower = segs[0]
+            lPos = self.d[lower]
+            if lPos ==0:
+                if direction==-1:
+                    raise ValueError('no smaller SNP than this')
+                elif pos < self.parent.f[0]:
+                    return 0 
+                else:
+                    return 1
+
+
+            uPos = lPos+1
+            if uPos ==len(self.parent.f):
+                if direction==1:
+                    raise ValueError('no SNP genotyped at larger pos')
+                else:
+                    return lPos
+            upper = self.parent.f[uPos]
+
+            #print lPos, uPos, "diff: ", pos-lower, upper-pos
+            if abs(pos - lower) > abs(upper-pos) and direction != -1:
+                return uPos
+            elif direction != 1:
+                return lPos
+            return uPos
+
+    def __init__(self, *args, **kwargs):
+        self.f = np.array(list(*args, **kwargs))
+        self.r = self.RevDict(self)
+        for i,e in enumerate(self.f):
+            self.r[e] = i
 
     def __setitem__(self,x,y):
-        if self.isfloat:
-            y = self.f2s(y)
-            dict.__setitem__(self,x,y)
-            self._r.__setitem__(y,x)
-        else:
-            dict.__setitem__(self,x,y)
-            self._r.__setitem__(y,x)
+        self.f.__setitem__(self,x,y)
+        self.r.__setitem__(y,x)
 
     def __getitem__(self,x):
-        if self.isfloat:
-            return self.s2f(dict.__getitem__(self,x))
-        else:
-            return dict.__getitem__(self,x)
+        return self.f.__getitem__(x)
+
+    def __len__(self):
+        return self.f.__len__()
+
+    def __str__(self):
+        return self.f.__str__()
+
+    def __repr__(self):
+        return self.f.__repr__()
 
 
-    @property
-    def r(self):
-        return self._r
+
 
 
 
@@ -165,9 +196,9 @@ class Haplotypes(object):
             object, intended for cleaning up loading files, etc.
         """
         #dict id <=> genomic position in bp
-        self._seg_sites = BijectiveDict()
+        self._seg_sites = Coords()
         #dict id <=> genomic position in rec distance
-        self._rec_sites = BijectiveDict()
+        self._rec_sites = Coords()
 
         self.sfs = None
         self._data = None
@@ -177,7 +208,7 @@ class Haplotypes(object):
         self._alleles = None
 
         #dict hid <=> individual name
-        self.individual_names = BijectiveDict()
+        self.individual_names = Coords()
 
         self._default_coordinate_system = 'id'
         self._default_individual_selector = 'hid'
@@ -332,56 +363,6 @@ class Haplotypes(object):
         self.sel_pos=self._seg_sites[id]
         self.selSiteData=self.get_SNP_data(id = self.sel_id)
 
-    def get_closest_SNP_from_pos(self,pos,direction=0):
-        """gives a SNP close to the position. If direction==None or direction
-        ==0, the closest SNP
-        is returned. is direction==1, the next larger SNP is returned, if
-        direction== =1, the next SNP with lower position is returned """
-
-        #lookup SNP, and get from dict if it exists: O(1)?
-        if not hasattr(self,'SNPdict'):
-            self.init_SNP_dict()
-        try:
-            s = self._snp_dict[pos]
-            return s
-        except:
-            pass
-
-        #do binary search: O(lg n)
-        segs= self._seg_sites.values()
-        l = len(segs)
-        while l>1:
-            pivot = l/2
-            if pos> segs[pivot]: 
-                segs = segs[pivot:]
-            else:
-                segs = segs[:pivot]
-            l= len(segs)
-        lower = segs[0]
-        lPos = self._snp_dict[lower]
-        if lPos ==0:
-            if direction==-1:
-                raise ValueError('no smaller SNP than this')
-            elif pos < self._seg_sites[0]:
-                return 0 
-            else:
-                return 1
-
-
-        uPos = lPos+1
-        if uPos ==len(self._seg_sites):
-            if direction==1:
-                raise ValueError('no SNP genotyped at larger pos')
-            else:
-                return lPos
-        upper = self._seg_sites[uPos]
-
-        #print lPos, uPos, "diff: ", pos-lower, upper-pos
-        if abs(pos - lower) > abs(upper-pos) and direction != -1:
-            return uPos
-        elif direction != 1:
-            return lPos
-        return uPos
 
     def get_haplotype(self,**kwargs):
         """returns  a tuple with first element being starting and 
@@ -839,7 +820,7 @@ class Haplotypes(object):
 
         self.selId = sum(np.less(self._seg_sites, self.selPos))
         self._seg_sites.insert(self.selId,self.selPos)
-        self._seg_sites = BijectiveDict((i,s) for i,s in enumerate(self._seg_sites))
+        self._seg_sites = Coords((i,s) for i,s in enumerate(self._seg_sites))
 
         self._data = np.zeros((self.nHap,self.nSegsites),dtype="bool")
         #self._data=self._data.view(GenArray)
@@ -907,7 +888,7 @@ class Haplotypes(object):
         self._data=np.zeros((self.nHap,self.nSegsites),dtype="b")
         #self._data=self._data.view(GenArray)
         self._seg_sites   = np.arange(self.nSegsites,dtype="f")/self.nSegsites
-        self._seg_sites = BijectiveDict((i,s) for i,s in enumerate(self._seg_sites))
+        self._seg_sites = Coords((i,s) for i,s in enumerate(self._seg_sites))
 
         i = 0 
         while i<self.nSegsites:
@@ -962,7 +943,7 @@ class Haplotypes(object):
         #check if all segregating sites are unique, otherwise it will not work:
         if len(np.unique(self._seg_sites)) != len(self._seg_sites):
                raise ValueError("some segregating sites have the same index//ms")
-        self._seg_sites = BijectiveDict((i,s) for i,s in enumerate(self._seg_sites))
+        self._seg_sites = Coords((i,s) for i,s in enumerate(self._seg_sites))
 
         #prepare Data
         self._data = np.zeros((self.nHap,self.nSegsites),dtype="int")
