@@ -16,10 +16,17 @@ class Coords(object):
             self.parent = parent
         def __getitem__(self,x):
             if isinstance(x,slice):
-                print x.start, x.stop
-                id0 = self.get_closest_SNP_from_pos(x.start,1)
-                id1 = self.get_closest_SNP_from_pos(x.stop,-1)
-                return np.arange(id0,id1)
+                xstart, xstop = x.start,x.stop
+                if x.step is not None:
+                    raise ValueError("Slice not supported")
+                if x.start is None:
+                    xstart = 0
+                if x.stop is None:
+                    xstop = np.finfo('d').max 
+
+                id0 = self.get_closest_SNP_from_pos(xstart-1e-12,1)
+                id1 = self.get_closest_SNP_from_pos(xstop-1e-12,-1)
+                return np.arange(id0,id1+1)
             elif isinstance(x,tuple):
                 id0 = self.get_closest_SNP_from_pos(x[0],1)
                 id1 = self.get_closest_SNP_from_pos(x[1],-1)
@@ -81,15 +88,32 @@ class Coords(object):
                 return lPos
             return uPos
 
+        def clear(self):
+            self.d.clear()
+
     def __init__(self, *args, **kwargs):
         self.f = np.array(list(*args, **kwargs))
         self.r = self.RevDict(self)
+        self.update_r_dict()
+
+    def update_r_dict(self):
+        """
+            updates the dict, done when an item is changed or inserted
+            this is of course rather inefficient and O(n)
+        """
+        self.r.clear()
         for i,e in enumerate(self.f):
             self.r[e] = i
 
     def __setitem__(self,x,y):
-        self.f.__setitem__(self,x,y)
+        """
+            the most general setter. As the list is guaranteed to be
+            ordered, the list will be sorted and the dict updated
+        """
+        self.f.__setitem__(x,y)
         self.r.__setitem__(y,x)
+        self.f = sorted(self.f)
+        self.update_r_dict()
 
     def __getitem__(self,x):
         return self.f.__getitem__(x)
@@ -103,46 +127,39 @@ class Coords(object):
     def __repr__(self):
         return self.f.__repr__()
 
+    def insert(self,x,y):
+        self.f.insert(x,y)
+        self.r[y] = x
+        if x < len(self)-1:
+            assert self.f[x] < self.f[x+1]
+        if x > 0:
+            assert self.f[x-1] < self.f[x]
+        self.update_r_dict()
 
+    def append(self,x):
+        return self.insert(len(self),x)
 
-
-
-
-
-    
-
-
-
-
-class Coordinates:
-    """class that manages the three different coordinate systems:
-        1. is in SNP
-        2. is in Bases
-        3. is in recombination distance
-
-        this class will allow specification of distance in any 
-            of the units
+class IDCoords(Coords):
     """
-    def __init__(self, **kwargs):
-        pass
+        a simple "identity subclass that handles id retrival
+    """
+    def __init__(self, *args, **kwargs):
+        self.r = self
+        return
 
-class GenArray(np.ndarray):
-    """super simple subclass of np.array that accepts a generator for indexing stuff, currently not used, as way too slow"""
-    def __getitem__(self,x):
-        if type(x) is GeneratorType or type(x) is xrange:
-            return np.ndarray.__getitem__(self,[i for i in x])
-        elif type(x) is tuple:
-            l = len(x)
-            a = []
-            for i,k in enumerate(x):
-                if type(x) is GeneratorType or type(x) is xrange:
-                    a.append([i for i in k])
-                else:
-                    a.append(k)
-            return np.ndarray.__getitem__(self,tuple(a))
+    def __getitem__(self, x):
+        return x
 
-        else:
-            return np.ndarray.__getitem__(self,x)
+    def __setitem__(self, *args):
+        return
+
+    def update_r_dict(self):
+        return 
+    
+    def __repr__(self):
+        return "obj"
+
+
 
 class Haplotypes(object):
     """
@@ -166,7 +183,6 @@ class Haplotypes(object):
         other attributes:
             polarized:      is the ancestral state known?
     """
-
     def __init__(self,file=None,verbose=False):
         """if file is given, it loads the file assuming mbs data"""
         """if verbose, some stuff is printed out"""
@@ -177,18 +193,6 @@ class Haplotypes(object):
         self.reset()
 
         self.verbose = verbose
-
-    def __getitem__(self,*args):
-        """
-            access to data should be as follows:
-                - first coordinate is the SNP locations, using the 
-                current coordinate system
-                - second coordinate (if present) is the individuals
-                e.g. if the coordinate system is pos, then h[(3000,4000),(10,20)] should give all SNP betweehn position 3000 and 4000 from individuals with ids 10-19
-
-        """
-        id,haps = self._get_default(*args[0])
-        return self._data[haps][:,id]
         
     def reset(self):
         """
@@ -198,17 +202,20 @@ class Haplotypes(object):
         #dict id <=> genomic position in bp
         self._seg_sites = Coords()
         #dict id <=> genomic position in rec distance
-        self._rec_sites = Coords()
+        self.coords = dict()
+        self.coords['pos'] = self._seg_sites
+        self.coords['bp']  = self._seg_sites
+        self.coords['rec'] = self._seg_sites
 
         self.sfs = None
         self._data = None
 
 
-        self._polarized = False
-        self._alleles = None
+        self.polarized = None
+        self.alleles = None
 
         #dict hid <=> individual name
-        self.individual_names = Coords()
+        self.individual_names = None
 
         self._default_coordinate_system = 'id'
         self._default_individual_selector = 'hid'
@@ -216,27 +223,42 @@ class Haplotypes(object):
     def __len__(self):
         return self._data.shape[1]
 
-    def _expand_tuple(self,t):
+#----------- Coordination and Indexing --------------------------
+    def __getitem__(self,*args):
         """
-            function used in location setters. If a tuple (start, end)
-            is passed, this function returns range (start,end)
+            access to data should be as follows:
+                - first coordinate is the SNP locations, using the 
+                current coordinate system
+                - second coordinate (if present) is the individuals
+                e.g. if the coordinate system is pos, then h[3000:4000,10:20] should give all SNP betweehn position 3000 and 4000 from individuals with ids 10-19
+
         """
-        return np.arange(t[0],t[1])
+        if isinstance(args[0],tuple):
+            id,haps = self._get_default(args[0][0], args[0][1])
+        else:
+            id,haps = self._get_default(args[0])
+        if len(self._data[haps].shape) == 1:
+            return self.subset(id,haps)
+            return self._data[haps][id]
+        return self.subset(id,haps)
+        return self._data[haps][:,id]
 
     def _get_default(self, *args, **kwargs):
-        print args[0]
+        """
+            parses haplotype and location arguments. The first default
+            arg in passed to _get_default_location, the second one is
+            passed to _get_default_individuals. kwargs are passed to both. To ensure this works kwargs should be exclusive for the two.
+        """
         if len(args)>0:
             loc = self._get_default_location(args[0], **kwargs)
         else:
             loc = self._get_default_location(**kwargs)
-        print "LOC",loc, args[0]
         if len(args)>1:
             haps = self._get_default_individuals(args[1], **kwargs)
         else:
             haps = self._get_default_individuals(**kwargs)
 
         return loc, haps
-
 
     def _get_default_individuals(self, *args, **kwargs):
         """
@@ -252,7 +274,7 @@ class Haplotypes(object):
         """
 
         #the default here is to return all inds
-        haplotypes = np.arange( self.nHap )
+        haplotypes = np.arange( self.n_hap )
         if len(args)>0:
             kwargs[self._default_individual_selector] = args[0]
         if len(args)>1:
@@ -275,16 +297,7 @@ class Haplotypes(object):
             haplotypes=[self.individual_names.r[name] \
                         for name in kwargs['name']]
 
-        if isinstance(haplotypes,tuple):
-            haplotypes = self._expand_tuple(haplotypes)
 
-        #I assume if the index doesn't have __len__, it is a single
-        #site, which is wrapped in a list here
-        try:
-            len(haplotypes)
-        except:
-            haplotypes = [haplotypes]
-        haplotypes=np.array(haplotypes)
         return haplotypes
 
     def _get_default_location(self,*args, **kwargs):
@@ -304,8 +317,10 @@ class Haplotypes(object):
                 rec: the genomic position in recomb. units
         """
 
+        cType = None
         if len(args)>0:
-            kwargs[self._default_coordinate_system] = args[0]
+            kwargs[self.default_coordinate_system] = args[0]
+            cType = self.default_coordinate_system
         if len(args)>1:
             raise ValueError("Too many unnamed args")
         keys = kwargs.keys()
@@ -313,77 +328,101 @@ class Haplotypes(object):
         if sum(('id' in keys,'pos' in keys, 'rec' in keys))>1:
             raise ValueError("Error: multiples of id, pos and "+\
                              "rec specified")
-        elif sum(('id' in keys,'pos' in keys, 'rec' in keys)) == 1:
-            if 'pos' in keys:
-                cType = 'pos'
-            elif 'rec' in keys:
-                cType = 'rec'
-            else:
-                cType = 'id'
-            print "ctype", cType
-            coords = kwargs[cType]
+        elif 'id' in keys:
+            cType = 'id'
         else:
-            if 'singleSite' in kwargs and kwargs['singleSite']:
-                coords = self.selId
+            for key in keys:
+                if key in self.coords.keys():
+                    cType = key
+                    break
+
+        #default if no coords are given
+        if cType is None:
+            if  'singleSite' in kwargs and kwargs['singleSite']:
+                coords = [self.selId]
             else:
-                coords = (0, len(self))
+                coords = np.arange( len(self))
             cType = 'id'
 
+        else:
+            coords = kwargs[cType]
 
-        if isinstance(coords,tuple):
-            coords = self._expand_tuple(coords)
 
-        #I assume if the index doesn't have __len__, it is a single
-        #site, which is wrapped in a list here
-        try:
-            len(coords)
-        except:
-            coords = [coords]
-        coords = np.array(coords)
+        if cType != 'id':
+            coords = self.coords[cType].r[coords]
 
-        if cType == 'pos':
-            pass
 
         return coords
 
+    def subset(self, *args, **kwargs):
+        """
+            returns a new Haplotype object that displays a subset of the 
+            original data. Rules whether data is copied are taken over from numpy, i.e. fancy indexing results in a copy, simple indexing doesn't
+        """
+        id, haps = self._get_default(*args, **kwargs)
+        hnew = Haplotypes()
+        hnew.reset()
 
+        if self.polarized is not None:
+            hnew.polarized = self.polarized[id]
+
+        if self.alleles is not None:
+            hnew.alleles = self.alleles[id]
+
+        if self.individual_names is not None:
+            hnew.individual_names = self.individual_names[haps]
+        hnew.default_coordinate_system = self.default_coordinate_system
+        hnew.default_individual_selector = self.default_individual_selector
+        
+        hnew._data = self._data[haps]
+        if len(hnew._data.shape) == 1:
+            hnew._data = hnew._data[id]
+            hnew._data = hnew._data[np.newaxis]
+        else:
+            hnew._data = hnew._data[:,id]
+
+        if len(hnew._data.shape) == 1:
+            hnew._data = hnew._data[np.newaxis].transpose()
+
+        for c in self.coords:
+            if c == 'bp' or c == 'id':
+                continue
+            try:
+                hnew.coords[c] = Coords(self.coords[c][id])
+            except:
+                hnew.coords[c] = Coords(self.coords[c][[id]])
+        hnew.coords['bp'] = hnew.coords['pos']
+        
+        return hnew
+
+#-----------  --------------------------
     def get_SNP_data(self, *args, **kwargs):
-        """get the SNP data from either a position(default) or ID"""
-        id,haps = self._get_default(singleSite=True, *args, **kwargs)
+        """get the SNP data from either a position(default) or ID, returns the numpy array"""
+        id, haps = self._get_default(singleSite=True, *args, **kwargs)
         return self._data[haps][:,id]
 
-    def set_selected_site(self,**kwargs):
+    def set_selected_site(self,*args, **kwargs):
         """
             function to assign a site to be the selected site.
             The main effect of this is for default behaviour of
             statistic when nothing else is declared
         """
-        id = self._get_default_location(singleSite=True,**kwargs)
+        id = self._get_default_location(singleSite=True, *args, **kwargs)
         self.sel_id=id
-        self.sel_pos=self._seg_sites[id]
-        self.selSiteData=self.get_SNP_data(id = self.sel_id)
+        self.sel_coords = dict()
+        for k in self.coords.keys():
+            self.sel_coords[k] = self.coords[k][self.sel_id]
+        #self.sel_site_data=self.get_SNP_data(id = self.sel_id)
 
-
-    def get_haplotype(self,**kwargs):
-        """returns  a tuple with first element being starting and 
-        ending position and then the seq
-        """
-        id,haplotypes = self._get_default(**kwargs)
-        return np.array([self._seg_sites[i] for i in id])
-
-    def get_haplotypes_with_derived_allel(self,**kwargs):
+    def get_haplotypes_with_derived_allel(self,*args, **kwargs):
         """gets all the haplotypes with the derived allel at the given snp. If id==None, the selected site is assumed"""
         data = self.get_SNP_data(**kwargs)
         return np.where(data==1)[0]
 
-    def get_haplotypes_with_ancestral_allel(self,**kwargs):
+    def get_haplotypes_with_ancestral_allel(self,*args, **kwargs):
         """gets all the haplotypes with the ancestral allel at the given snp. If id==None, the selected site is assumed"""
         data = self.get_SNP_data(**kwargs)
         return np.where(data==0)[0]
-
-    def get_haplotypes(self):
-        """gets all the haplotypes in the sample"""
-        return np.arange(self.n_hap())
 
     @property
     def default_coordinate_system(self):
@@ -391,7 +430,7 @@ class Haplotypes(object):
 
     @default_coordinate_system.setter
     def default_coordinate_system(self, value):
-        if value not in ("id","rec","pos"):
+        if value not in ("id","rec","pos") and value not in self.coords.keys():
             raise ValueError("Tried to set coordinate"+\
                              " system to %s"%value)
         self._default_coordinate_system = value
@@ -418,50 +457,54 @@ class Haplotypes(object):
         """returns the number of SNP in the data sets"""
         return self._data.shape[1]
 
-#-----------------------------IHS/EHH----------------------------
-    def _unique_haplotypes(self,data=None,**kwargs):
-        """for the data given in data, computes the unique haplotype, returns a dict"""
-        if data==None:
-            id,haplotypes=self._get_default(**kwargs)
-            data=self._data[haplotypes,:][:,id]
+    @property
+    def data(self):
+        return self._data
 
-        nHap=data.shape[0]
+
+#-----------------------------IHS/EHH----------------------------
+    def _unique_haplotypes(self,*args,**kwargs):
+        """for the data given in data, computes the unique haplotype, returns a dict"""
+        id,haplotypes=self._get_default(*args, **kwargs)
+        data=self[id,haplotypes]
+
+        n_hap=data.n_hap
         unique=dict()
         #if we only have 1 segregating site, return allele frequencies
-        if len(data.shape)==1:
-            unique[0]=data.tolist().count(0)
-            unique[1]=data.tolist().count(1)
+        if data.n_snp == 1:
+            unique[0] = sum (data.data == 0)
+            unique[1] = sum (data.data == 1)
             return unique
 
         #else, change to string... 
-        for i in range(nHap):
-            s = tuple(j for j in data[i])
-            if unique.has_key(s):
+        for i in range(n_hap):
+            s = tuple(j for j in data.data[i])
+            if s in unique:
                 unique[s]+=1
             else:
                 unique[s] = 1
 
         return unique
 
-    def _EHH_single(self,x, id, haplotypes, onesided=0):
-        """gets EHH for a single x. Use EHH instead."""
+    def _EHH_single(self, x, coords='bp', onesided=0, *args,**kwargs):
+        """gets EHH for a single reference position x. Use EHH instead."""
 
-        pos = self._seg_sites[id]
+        id , haplotypes=self._get_default( singleSite=True, *args,**kwargs)
         """call get EHH instead"""
         if haplotypes.shape == (0,):
             return 0 
         if onesided > 0:
-            hapData=self.get_haplotype(pos=(pos,pos+x),haplotypes=haplotypes)
+            hapData=self.get_SNP_data(pos=(pos, pos+x), haplotypes=haplotypes)
         elif onesided < 0:
-            hapData=self.get_haplotype(pos=(pos-x,pos),haplotypes=haplotypes)
+            hapData=self.get_SNP_data(pos=(pos-x,pos), haplotypes=haplotypes)
         else:
-            hapData=self.get_haplotype(pos=(pos-x,pos+x),haplotypes=haplotypes)
-        hapData = self.get_SNP_data(pos=hapData,haplotypes=haplotypes)
-        if hapData == []:
-            raise ValueError("empty data; ind="+str(haplotypes))
-        return self._EHH_general(hapData)
+            pos = {coords:slice(self.coords[coords][id]-x, 
+                                self.coords[coords][id]+x)}
+            pos['hid'] = haplotypes
+            
+        return self._EHH_general(**pos)
 
-    def EHH(self,x,onesided=0,**kwargs):
+    def EHH(self,x,onesided=0,*args, **kwargs):
         """calculates EHH in the range SelectedSite +/- x sites
                 - onesided: if negative, only upstream allels are considered, if
                 positive, only downstream allels are considered, otherwise both
@@ -470,22 +513,21 @@ class Haplotypes(object):
                 - haplotypes: if only a subset of haplotypes should be used:
                     default=all haplotypes
                     - verbose: adds some output"""
-        id,haplotypes=self._get_default(singleSite=True, **kwargs)
-
         ehh=[]
         if isinstance(x,tuple) or isinstance(x,np.ndarray):
             for xx in x:
-                ehh.append(self._EHH_single(xx,onesided, id=id, haplotypes=haplotypes))
+                ehh.append(self._EHH_single(xx, onesided=onesided, 
+                                            *args, **kwargs))
             return ehh
         else:
-            return self._EHH_single(x,haplotypes=haplotypes,id=id,onesided=onesided)
+            return self._EHH_single(x,onesided=onesided, *args, **kwargs)
 
-    def _EHH_general(self,hapData):
+    def _EHH_general(self,*args, **kwargs):
         """don't call this. call EHH instead
             calculates EHH on the haplotypes given in hapData:
             hapData is expected to be an np.array of ints/bools where each row is a haplotype and each column is an individual
         """
-        uniqueHaplotypes=self._unique_haplotypes(hapData)
+        uniqueHaplotypes=self._unique_haplotypes(*args, **kwargs)
         cnt = uniqueHaplotypes.values()
         
         #get Denominator 
@@ -943,7 +985,11 @@ class Haplotypes(object):
         #check if all segregating sites are unique, otherwise it will not work:
         if len(np.unique(self._seg_sites)) != len(self._seg_sites):
                raise ValueError("some segregating sites have the same index//ms")
-        self._seg_sites = Coords((i,s) for i,s in enumerate(self._seg_sites))
+        self._seg_sites = Coords(s for s in self._seg_sites)
+        self.coords['pos'] = self._seg_sites
+        self.coords['bp']  = self._seg_sites
+        self.coords['rec'] = self._seg_sites
+        self.coords['id'] = IDCoords()
 
         #prepare Data
         self._data = np.zeros((self.nHap,self.nSegsites),dtype="int")

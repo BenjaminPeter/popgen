@@ -206,4 +206,4 @@ class SFS():
         self._td = ( self.Pi() - self.wattersons_theta() )/np.sqrt(vartD)
 
     def __repr__(self):
-        print self.sfs
+        return self.sfs.__repr__()
