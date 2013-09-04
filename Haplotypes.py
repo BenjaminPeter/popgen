@@ -87,6 +87,8 @@ class Coords(object):
             elif direction != 1:
                 return lPos
             return uPos
+        def closest(self,pos, direction=0):
+            return self.get_closest_SNP_from_pos(pos=pos,direction=direction)
 
         def clear(self):
             self.d.clear()
@@ -144,22 +146,32 @@ class IDCoords(Coords):
         a simple "identity subclass that handles id retrival
     """
     def __init__(self, *args, **kwargs):
+        self.min, self.max = args[:2]
         self.r = self
         return
 
     def __getitem__(self, x):
         return x
-
+    
     def __setitem__(self, *args):
         return
-
+    
     def update_r_dict(self):
         return 
-    
+      
     def __repr__(self):
         return "obj"
-
-
+    
+    def closest(self, pos, direction=0):
+        pos = max(self.min,0)
+        pos = min(self.max,0)
+        if direction == 0 :
+            f = np.round
+        elif direction > 0:
+            f = np.ceil
+        else:
+            f = np.floor
+        return f(pos)
 
 class Haplotypes(object):
     """
@@ -204,6 +216,7 @@ class Haplotypes(object):
         #dict id <=> genomic position in rec distance
         self.coords = dict()
         self.coords['pos'] = self._seg_sites
+        self.coords['id'] = IDCoords(0,0)
         self.coords['bp']  = self._seg_sites
         self.coords['rec'] = self._seg_sites
 
@@ -234,14 +247,18 @@ class Haplotypes(object):
 
         """
         if isinstance(args[0],tuple):
-            id,haps = self._get_default(args[0][0], args[0][1])
+            if len(args[0]) == 3:
+                id,haps,coords = self._get_default(args[0][0], 
+                                                   args[0][1],
+                                                   args[0][2])
+            else:
+                id,haps,coords = self._get_default(args[0][0], 
+                                                   args[0][1])
         else:
-            id,haps = self._get_default(args[0])
+            id,haps,coords = self._get_default(args[0])
         if len(self._data[haps].shape) == 1:
             return self.subset(id,haps)
-            return self._data[haps][id]
         return self.subset(id,haps)
-        return self._data[haps][:,id]
 
     def _get_default(self, *args, **kwargs):
         """
@@ -257,8 +274,12 @@ class Haplotypes(object):
             haps = self._get_default_individuals(args[1], **kwargs)
         else:
             haps = self._get_default_individuals(**kwargs)
+        if len(args)>2:
+            coords = self._get_default_coords(args[2], **kwargs)
+        else:
+            coords = self._get_default_coords(**kwargs)
 
-        return loc, haps
+        return loc, haps, coords
 
     def _get_default_individuals(self, *args, **kwargs):
         """
@@ -280,15 +301,17 @@ class Haplotypes(object):
         if len(args)>1:
             raise ValueError("Too many unnamed args")
         keys = kwargs.keys()
-        if 'pops' in keys:
+        print kwargs
+        if 'pop' in keys:
             haplotypes = []
             try:
-                for pop in kwargs['pops']:
-                    for sample in pop.samples:
+                for pop in kwargs['pop']:
+                    for sample in pop:
                         haplotypes.append(sample)
             except:
-                for sample in kwargs['pops']:
+                for sample in kwargs['pop']:
                     haplotypes.append(sample)
+            print haplotypes
 
 
         elif 'hid' in keys:
@@ -299,6 +322,17 @@ class Haplotypes(object):
 
 
         return haplotypes
+
+    def _get_default_coords(self,*args, **kwargs):
+        """
+            returns the coordinate system
+        """
+        if len(args)>0:
+            return args[0]
+        else:
+            if 'coords' in kwargs:
+                return kwargs['coords']
+        return 'id'
 
     def _get_default_location(self,*args, **kwargs):
         """
@@ -319,8 +353,11 @@ class Haplotypes(object):
 
         cType = None
         if len(args)>0:
-            kwargs[self.default_coordinate_system] = args[0]
-            cType = self.default_coordinate_system
+            if 'coords' in kwargs:
+                cType = kwargs['coords']
+            else:
+                cType = self.default_coordinate_system
+            kwargs[cType] = args[0]
         if len(args)>1:
             raise ValueError("Too many unnamed args")
         keys = kwargs.keys()
@@ -328,8 +365,6 @@ class Haplotypes(object):
         if sum(('id' in keys,'pos' in keys, 'rec' in keys))>1:
             raise ValueError("Error: multiples of id, pos and "+\
                              "rec specified")
-        elif 'id' in keys:
-            cType = 'id'
         else:
             for key in keys:
                 if key in self.coords.keys():
@@ -348,10 +383,11 @@ class Haplotypes(object):
             coords = kwargs[cType]
 
 
-        if cType != 'id':
-            coords = self.coords[cType].r[coords]
+        coords = self.coords[cType].r[coords]
 
 
+        if isinstance(coords, int) or isinstance(coords, float):
+            coords = np.array([coords])
         return coords
 
     def subset(self, *args, **kwargs):
@@ -359,7 +395,7 @@ class Haplotypes(object):
             returns a new Haplotype object that displays a subset of the 
             original data. Rules whether data is copied are taken over from numpy, i.e. fancy indexing results in a copy, simple indexing doesn't
         """
-        id, haps = self._get_default(*args, **kwargs)
+        id, haps, _ = self._get_default(*args, **kwargs)
         hnew = Haplotypes()
         hnew.reset()
 
@@ -392,13 +428,14 @@ class Haplotypes(object):
             except:
                 hnew.coords[c] = Coords(self.coords[c][[id]])
         hnew.coords['bp'] = hnew.coords['pos']
+        hnew.coords['id'] = IDCoords(0,hnew.n_snp)
         
         return hnew
 
-#-----------  --------------------------
+#-----------  data retrieval--------------------------
     def get_SNP_data(self, *args, **kwargs):
         """get the SNP data from either a position(default) or ID, returns the numpy array"""
-        id, haps = self._get_default(singleSite=True, *args, **kwargs)
+        id, haps, _ = self._get_default(singleSite=True, *args, **kwargs)
         return self._data[haps][:,id]
 
     def set_selected_site(self,*args, **kwargs):
@@ -416,14 +453,15 @@ class Haplotypes(object):
 
     def get_haplotypes_with_derived_allel(self,*args, **kwargs):
         """gets all the haplotypes with the derived allel at the given snp. If id==None, the selected site is assumed"""
-        data = self.get_SNP_data(**kwargs)
+        data = self.get_SNP_data(*args, **kwargs)
         return np.where(data==1)[0]
 
     def get_haplotypes_with_ancestral_allel(self,*args, **kwargs):
         """gets all the haplotypes with the ancestral allel at the given snp. If id==None, the selected site is assumed"""
-        data = self.get_SNP_data(**kwargs)
+        data = self.get_SNP_data(*args, **kwargs)
         return np.where(data==0)[0]
 
+#---------- default values & properties --------------------------
     @property
     def default_coordinate_system(self):
         return self._default_coordinate_system
@@ -446,7 +484,6 @@ class Haplotypes(object):
                              " system to %s"%value)
         self._default_individual_selector = value
 
-
     @property
     def n_hap(self):
         """returns the number of haplotypes in the data set"""
@@ -465,7 +502,7 @@ class Haplotypes(object):
 #-----------------------------IHS/EHH----------------------------
     def _unique_haplotypes(self,*args,**kwargs):
         """for the data given in data, computes the unique haplotype, returns a dict"""
-        id,haplotypes=self._get_default(*args, **kwargs)
+        id,haplotypes,coords = self._get_default(*args, **kwargs)
         data=self[id,haplotypes]
 
         n_hap=data.n_hap
@@ -486,21 +523,35 @@ class Haplotypes(object):
 
         return unique
 
-    def _EHH_single(self, x, coords='bp', onesided=0, *args,**kwargs):
+    def _EHH_single(self, x, onesided=0, *args,**kwargs):
         """gets EHH for a single reference position x. Use EHH instead."""
-
-        id , haplotypes=self._get_default( singleSite=True, *args,**kwargs)
         """call get EHH instead"""
-        if haplotypes.shape == (0,):
-            return 0 
+
+        id , haplotypes, coords=self._get_default( singleSite=True, *args,**kwargs)
+        try:
+            if len(haplotypes) == 0:
+                return 0 
+        except:
+            try:
+                if haplotypes.start == haplotypes.stop:
+                    return 0
+            except:
+                raise IndexError("Unknown Indexer")
+
         if onesided > 0:
-            hapData=self.get_SNP_data(pos=(pos, pos+x), haplotypes=haplotypes)
+            pos = {coords:slice(self.coords[coords][id], 
+                                self.coords[coords][id]+x)}
+            pos['hid'] = haplotypes
         elif onesided < 0:
-            hapData=self.get_SNP_data(pos=(pos-x,pos), haplotypes=haplotypes)
+            pos = {coords:slice(self.coords[coords][id]-x, 
+                                self.coords[coords][id])}
+            pos['hid'] = haplotypes
         else:
             pos = {coords:slice(self.coords[coords][id]-x, 
                                 self.coords[coords][id]+x)}
             pos['hid'] = haplotypes
+        if pos[coords].start <0 and self.coords[coords][id] >= 0:
+            pos[coords] = slice(0,pos[coords].stop)
             
         return self._EHH_general(**pos)
 
@@ -550,7 +601,7 @@ class Haplotypes(object):
         return float(nominator) / denom
     
     def _integrate_EHH(self,dir,threshold,maxDist=None,
-                         interpolation=False, verbose=False, **kwargs):
+                         interpolation=False, verbose=False, *args, **kwargs):
         """calculates the integrated EHH
             - id = id of the SNP to start at
             - dir = direction, if negative, upstream, if positive, downstream
@@ -559,20 +610,24 @@ class Haplotypes(object):
             - interpolation = if true, the interpolation by Voight et al. is used, if false, a step function more appropriate for sequence data is used
             -maxDist: the maximal distance to integrate to
         """
-        id,haplotypes=self._get_default(singleSite=True, **kwargs)
+        id, ind, cType = self._get_default(singleSite=True, *args, **kwargs)
 
-        if(len(id)==1): id = id[0]
-        ind=haplotypes 
+        try:
+            id = id[0]
+        except:
+            pass
+        print id, ind, cType
+        coords = self.coords[cType]
 
-        pos=self._seg_sites[id]
+        pos = coords[id]
         #check if there are more than 2 haplotypes, otherwise return 0
         if len(ind)<2:
             return 0,-1#pos
         #check if we have the topmost snp
-        if id==self.nSegsites-1 and dir>0: 
-            return 0,self._seg_sites[id]#pos
+        if id==self.n_snp-1 and dir>0: 
+            return 0,coords[id]#pos
         if id==0 and dir<0:
-            return 0,self._seg_sites[id]
+            return 0,coords[id]
 
         iEHH=0
         if dir >0:
@@ -584,15 +639,15 @@ class Haplotypes(object):
         if maxDist == None:
             maxDist=np.inf
         maxDist = maxDist * dir
-        endId               =   self.get_closest_SNP_from_pos(pos+maxDist,direction=-dir)
-        curId,curPos,curEHH =   id,self._seg_sites[id],1
-        newId,newPos           =   id+dir,self._seg_sites[id+dir]
+        endId               =   coords.r.closest(max(0,pos+maxDist*-dir),-dir)
+        curId,curPos,curEHH =   id, pos, 1.
+        newId,newPos        =   id+dir,coords[id+dir]
 
 
         while (newId>0 and dir<0) or \
-              (newId <self.nSegsites-1 and dir>0):
+              (newId <self.n_snp and dir>0):
             delta = (newPos - curPos)*dir
-            newEHH = self.EHH(abs(pos-newPos),id=id,onesided=dir,haplotypes=ind)
+            newEHH = self.EHH(abs(pos-newPos),id=id,onesided=dir,hid=ind)
 
             if interpolation:
                 k = (newEHH+curEHH-.1)*.5*delta
@@ -613,8 +668,8 @@ class Haplotypes(object):
                 break
             iEHH+=k
             #print "[%f][%f-%f][%f/%f]" %(pos,curPos,newPos,curEHH,newEHH)
-            curPos,curId,curEHH         =       newPos,newId,newEHH
-            newPos,newId                =       self._seg_sites[newId+dir],newId+dir
+            curPos,curId,curEHH =       newPos,newId,newEHH
+            newPos,newId        =       coords[newId+dir],newId+dir
 
 
             #do some adjustment for distance between last snp and end of ehh
@@ -634,17 +689,22 @@ class Haplotypes(object):
 
     def IHS_no_anc_der(self,
                        threshold=.05,verbose=False,
-                       interpolation=False,maxDist=None,
+                       interpolation=False,maxDist=None,*args,
                       **kwargs):
-        """gets the integrated IHS for all the haplotypes, ignoring
+        """gets the integrated EHH for all the haplotypes, ignoring
         ancestral/derived alleles"""
-        id,haplotypes = self._get_default(singleSite=True,
+        id,haplotypes,coords = self._get_default(singleSite=True,*args,
                                                   **kwargs)
-        ihs,dmin                =       self._integrate_EHH(id,haplotypes,-1,threshold,
-                                                           maxDist,interpolation,verbose)
-        k,dmax                  =       self._integrate_EHH(id,haplotypes,1,threshold,
-                                                           maxDist,interpolation,verbose)
-        ihs                     +=      k
+        ihs,dmin = self._integrate_EHH(id=id,hid=haplotypes,dir=-1,threshold=threshold,
+                                       maxDist=maxDist,
+                                       interpolation=interpolation,
+                                       verbose=verbose)
+        k,dmax   = self._integrate_EHH(id=id,hid=haplotypes,dir=1,
+                                       threshold=threshold,
+                                       maxDist=maxDist,
+                                       interpolation=interpolation,
+                                       verbose=verbose)
+        ihs      +=k
         return ihs,(dmin,dmax)
 
     def IHS(self, threshold=0.05,maxDist=None, verbose=False,interpolation=False,noAncDer=False, **kwargs):
@@ -659,19 +719,19 @@ class Haplotypes(object):
 
         if noAncDer:
             return self.IHS_no_anc_der(threshold,verbose,interpolation,**kwargs)
-        id,haplotypes = self._get_default(singleSite=True, **kwargs)
+        id,haplotypes,coords = self._get_default(singleSite=True, **kwargs)
 
         iAnc = self.get_haplotypes_with_ancestral_allel(id=id)
         iDer = self.get_haplotypes_with_derived_allel(id=id)
 
         ihs_derived,dmin = self._integrate_EHH(-1,threshold,maxDist,
-                interpolation, verbose,id=id, haplotypes=iDer)
+                interpolation, verbose,id=id, hid=iDer)
         k,dmax= self._integrate_EHH(1,threshold,maxDist,interpolation,
-                                    verbose,id=id, haplotypes=iDer)
+                                    verbose,id=id, hid=iDer)
         ihs_derived+=k
 
-        ihs_ancestral,amin= self._integrate_EHH(-1,threshold,maxDist,interpolation,verbose, id=id, haplotypes=iAnc)
-        k,amax= self._integrate_EHH(1,threshold,maxDist,interpolation,verbose, id=id, haplotypes=iAnc)
+        ihs_ancestral,amin= self._integrate_EHH(-1,threshold,maxDist,interpolation,verbose, id=id, hid=iAnc)
+        k,amax= self._integrate_EHH(1,threshold,maxDist,interpolation,verbose, id=id, hid=iAnc)
         ihs_ancestral+=k
 
         try:
@@ -680,21 +740,6 @@ class Haplotypes(object):
             ihs = np.inf
 
         return ihs,ihs_ancestral,ihs_derived,(amin,amax),(dmin,dmax)
-
-    def IHS_external(self):
-        np.savetxt("segSites.txt",self._seg_sites,fmt="%f")
-        np.savetxt("dump.txt",self._data,fmt="%i")
-
-        s="./ihs3 segSites.txt dump.txt %i > temp.txt" %self.selId
-        #print s
-        os.system(s)
-        try:
-            k=np.loadtxt("temp.txt")
-        except IOError:
-            k=(np.nan,np.nan,np.nan)
-        if k[0] ==-1e13:
-            k=(np.nan,np.nan,np.nan)
-        return (k[2],k[1],k[0])
 
     def XPEHH(self,x,interpolation=False,verbose=False, **kwargs):
         """untested"""
@@ -715,20 +760,24 @@ class Haplotypes(object):
         return(np.log(iEHH0/iEHH1),iEHH0,iEHH1)
 
 #-----------------------------Heterozygosity----------------------------
-    def get_SFS(self,**kwargs):
-        """avoid double computing global sfs"""
-        id,haplotypes=self._get_default(**kwargs)
-        if len(id) == self.n_snp() and len(haplotypes) == self.n_hap():
-            if self.sfs is None:
-                self.sfs = self.make_SFS()
-            sfs = self.sfs
-        else:
-            sfs = self.make_SFS(**kwargs)
+    def get_SFS(self,*args, **kwargs):
+        """avoid double computing global sfs, could possibly done
+        smoother using the property function"""
+        id,haplotypes,coords=self._get_default(*args, **kwargs)
+        try:
+            if len(id) == self.n_snp and len(haplotypes) == self.n_hap:
+                if self.sfs is None:
+                    self.sfs,self.freqt = self.make_SFS()
+                sfs = self.sfs
+            else:
+                sfs,freqt = self.make_SFS(*args, **kwargs)
+        except:
+            sfs,freqt = self.make_SFS(*args, **kwargs)
         return sfs
 
-    def Heterozygosity(self,**kwargs):
+    def Heterozygosity(self,*args, **kwargs):
         """calculates heterozygosity directly"""
-        sfs = self.get_SFS(**kwargs)
+        sfs,freqt = self.get_SFS(*args, **kwargs)
         return sfs.Heterozygosity()
 
 #-----------------------------Pi----------------------------
@@ -739,17 +788,21 @@ class Haplotypes(object):
     Pi = n_pw_differences
 
 #----------------------------Singletons/sfs--------------------------
-    def make_SFS(self,**kwargs):
-        id,haplotypes=self._get_default(**kwargs)
+    def make_SFS(self,*args, **kwargs):
+        id,haplotypes,coords=self._get_default(*args,**kwargs)
+        print id
 
 
         nHap=len(haplotypes)
         sfs = SFS(nHap)
-        freqs = FreqTable(n_snp=len(id), sample_sizes=[nHap])
+        try:
+            freqs = FreqTable(n_snp=len(id), sample_sizes=[nHap])
+        except:
+            freqs = FreqTable(n_snp=id.stop-id.start, sample_sizes=[nHap])
 
-        for i in np.array(id):
-            snp=self.get_SNP_data(id=i,haplotypes=haplotypes)
-            p= sum( snp )
+
+        for i,snp in enumerate(self[id,haplotypes]):
+            p= sum( snp.data )
             sfs[p] += 1
             freqs[i] = float(p)
 
@@ -757,14 +810,10 @@ class Haplotypes(object):
         
         return sfs,freqs
 
-    def n_singletons(self,folded=True,**kwargs):
+    def n_singletons(self,*args,**kwargs):
         sfs = self.get_SFS(**kwargs)
-        return sfs.n_singletons(folded=folded)
+        return sfs.n_singletons()
 
-    def hide_singletons(self,folded=True):
-        self.hide_allels_with_frequency(freq=1,folded=folded)
-    def hide_doubletons(self,folded=True):
-        self.hide_allels_with_frequency(freq=2,folded=folded)
     def hide_allels_with_frequency(self,freq=1,folded=True):
         sfs = self.get_SFS(**kwargs)
         toKeep=np.where(np.logical_and(self.freqs!=freq ,
@@ -796,7 +845,7 @@ class Haplotypes(object):
            checked against the stats program from ms
         """
         sfs = self.get_SFS(**kwargs)
-        return sfs.Tajimas_D()
+        return sfs.tajimas_d()
     TD = Tajimas_D
 
 
@@ -966,7 +1015,6 @@ class Haplotypes(object):
 
         self.read_next_data_set()
 
-
     def read_next_ms_data_set(self):
         self.reset()
         while 1:
@@ -989,7 +1037,8 @@ class Haplotypes(object):
         self.coords['pos'] = self._seg_sites
         self.coords['bp']  = self._seg_sites
         self.coords['rec'] = self._seg_sites
-        self.coords['id'] = IDCoords()
+        self.coords['id'] = IDCoords(min(self._seg_sites), 
+                                     max(self._seg_sites))
 
         #prepare Data
         self._data = np.zeros((self.nHap,self.nSegsites),dtype="int")

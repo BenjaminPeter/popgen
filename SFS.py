@@ -133,10 +133,9 @@ class SFS():
         return sfs, freqs
 
 
-    def get_H(self):
+    def Heterozygosity(self):
         """calculates heterozygosity"""
         return self.Pi() / self.S()
-    get_Heterozygosity = get_H
 
     def Pi(self):
         if self._pi is not None:
@@ -191,6 +190,7 @@ class SFS():
         if self._td is not None:
             return self._td
 
+        S = self.S()
         a1=0.0
         n= self.n_hap
         for i in range(1,n):
@@ -204,6 +204,10 @@ class SFS():
         vartD=e1*S+e2*S*(S-1.)
 
         self._td = ( self.Pi() - self.wattersons_theta() )/np.sqrt(vartD)
-
+        return self._td
+    
     def __repr__(self):
         return self.sfs.__repr__()
+
+    def n_singletons(self):
+        return self[1]

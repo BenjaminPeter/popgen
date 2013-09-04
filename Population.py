@@ -30,6 +30,10 @@ class Population:
         location = None
         self.name = "Anon"
         self.sample_size = 0
+        self.samples = []
+
+    def __getitem__(self,i):
+        return self.samples[i]
 
     def load(self,f):
         """

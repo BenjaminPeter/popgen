@@ -97,7 +97,8 @@ class TestMsmsData(unittest.TestCase):
 
     def test_EHH_IHS(self):
         self.assertEqual(len(self.h._unique_haplotypes()),21)
-        self.assertNotEqual(self.h.EHH((3,6),id=11,coords='id'),self.h.EHH((.3,.6),id=11))
+        self.assertNotEqual(self.h.EHH((3,6),id=11,coords='id'),7)
+        self.assertNotEqual(self.h.EHH((.3,.6),id=11,coords='bp'),7)
 
 
 if __name__ == '__main__':
