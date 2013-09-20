@@ -212,13 +212,12 @@ class Haplotypes(object):
             object, intended for cleaning up loading files, etc.
         """
         #dict id <=> genomic position in bp
-        self._seg_sites = Coords()
         #dict id <=> genomic position in rec distance
         self.coords = dict()
-        self.coords['pos'] = self._seg_sites
+        self.coords['pos'] = Coords()
         self.coords['id'] = IDCoords(0,0)
-        self.coords['bp']  = self._seg_sites
-        self.coords['rec'] = self._seg_sites
+        self.coords['bp']  = self.coords['pos']
+        self.coords['rec'] = Coords()
 
         self.sfs = None
         self._data = None
@@ -1193,9 +1192,19 @@ class Haplotypes(object):
 
 
 #--------------------- need improvement ---------------------
+    def read_vcf_header(self,line):
+        line = line.split()
+        individuals = line[9:]
 
-    def read_VCF(self, file, panel, selPos, seqPos, 
-                    polarizeFile="/data/selectiveSweep/data/ancestral/genes_HC.txt",
+    def read_vcf_line(self,line):
+        line = line.replace("/","|")
+        line = line.split()
+        data = [i.split(":")[0].split("|") for i in line[10:]]
+        data = np.array(data,dtype="i1")
+        return [d for d in data.transpose()]
+
+
+    def read_vcf_file(self, file,
                     vcfHasAA=False,excludeNonPolarizable=False):
         """read vcf data into data structure; arguments:
             file:       vcf file name
@@ -1205,169 +1214,34 @@ class Haplotypes(object):
             seqPos:     start and ending position
             polarizeFile: file with info on anc/der allele
             vcfHasAA:   if Ancestral Allele is in VCF, this is used instead
-            """
-        polarize=False
-        if not vcfHasAA:
-            if polarizeFile != None:
-                pf=np.loadtxt(polarizeFile,dtype="S")
-                polarize=True
-        if type(panel) == list or type(panel) == np.ndarray:
-            individualIDs = panel
-        else:
-            a=np.loadtxt("interim_phase1.20101123.ALL.panel",dtype="S")
-            if panel == "ALL":
-                individualIDs=[a[i,0]  for i in range(len(a[:,1]))]
-            else:
-                toKeep=panel
-                individualIDs=[a[i,0]  for i in range(len(a[:,1])) if a[i,1] in toKeep]
-        print individualIDs
+        """
+        self.reset()
+        handle = open(file)
+        line = handle.readline()
 
-        file= open(file,"r")
-        line=file.readline()
-        while line[0]=="#":
-            header= line
-            line=file.readline()
+        if not "VCF" in line or "vcf" in line:
+            raise ValueError("ill formatted vcf file")
 
-        hd = header.split()
-        data = list()
-        haplotypesToKeep=[]
-        for i,id in enumerate(individualIDs):
-            for j,id2 in enumerate(hd):
-                if id == id2:
-                    haplotypesToKeep.append(j)
-            
+        """currently, Im not handling the file descriptors"""
+        while line.startswith("##"):
+            line = handle.readline()
+        if not line.startswidth("#"):
+            raise ValueError("ill formatted vcf file")
 
-        #haplotypesToKeep=[i for i in range(len(hd)) if np.array(hd)[i] in individualIDs]  
-        print "BLA"
-        print haplotypesToKeep
-        ls=line.split()
-        ht=np.array([ ht[0:3] for ht in np.array(ls)[haplotypesToKeep]])
-        snpdata=(np.array([i.split("|") for i in ht])).flatten()
-        snpmeta=ls[:9]
-        snppos=ls[1]
-        snpqual=ls[6]
-        snp=(snppos,snpqual,snpdata,snpmeta[3],snpmeta[4])
+        self.read_vcf_header(line)
+        line = line.split()
 
-        data.append(snp)
-        nSNPRemoved =0
-        while True:
-            line=file.readline()
-            if not line:
-                break
-            ls=line.split()
-            ht=np.array([ ht[0:3] for ht in np.array(ls)[haplotypesToKeep]])
-            snpdata=(np.array([i.split("|") for i in ht])).flatten()
-            snpmeta=ls[:9]
-            snppos=ls[1]
-            snpqual=ls[6]
+        self.coords['chr']
+        self.metadata=dict()
 
-            if vcfHasAA:
-                moreData = ls[7].split( ";" )
-                mdd = dict( [l.split("=") for l in moreData] )
-                if   mdd["AA"]         == snpmeta[3]: #SNP is ancestral
-                    pass
-                elif mdd["AA"]         == snpmeta[4]: #SNP is derived
-                    snpdata = np.array(1 - np.array(snpdata,dtype="b"),
-                                       dtype="S1")
-                elif mdd["AA"].upper() == snpmeta[3] and \
-                        (not excludeNonPolarizable):
-                    pass
-                elif mdd["AA"].upper() == snpmeta[4] and \
-                        (not excludeNonPolarizable):
-                    snpdata = np.array(1 - np.array(snpdata,dtype="b"),
-                                       dtype="S1")
-                else:
-                    if excludeNonPolarizable:
-                        nSNPRemoved+=1
-                        continue
-                    #print snppos, mdd["AA"], snpmeta[3], snpmeta[4]
-                    #raise ValueError("SNP neither anc nor derived")
-            snp=(snppos,snpqual,snpdata,snpmeta[0],snpmeta[3],snpmeta[4])
-            data.append(snp)
-        print "removed %d SNP"%nSNPRemoved
-        if polarize:
-            chr=snpmeta[0][0]
-            #refAllele = [i[3] for i in snpmeta] 
-            #altAllele = [i[4] for i in snpmeta] 
-            #refDict is a dict [chr, pos] => [refH, refC]
-            refDict = dict()
-            for i,d in enumerate(pf):
-                refDict[(pf[i,0],pf[i,1])] = (pf[i,2],pf[i,3])
+        data = []
+        for line in handle:
+            new_hap = self.read_vcf_line()
+            for h in new_hap:
+                data.append(h)
+        data = np.array(data)
 
-            toSwitch=[]
-            for i,snp in enumerate(data):
-                if (snp[3],snp[0]) in refDict:
-                    ref = refDict[(snp[3],snp[0])]
-                    #print "[%s:%s]1000k: [%s:%s] emilia: [%s:%s]" %(snp[3],snp[0],snp[4],snp[5],ref[0],ref[1])
-                    if ref[0] != snp[4]:
-                        pass
-                        print "snp [%s:%s] is dif between 1k gen and emilia" %  (snp[3],snp[0])
-                    elif ref[0] == ref[1]: #snp is polarized correctly
-                        if ref[0] == snp[4]:
-                            pass
-                            print "snp [%s:%s] is polarized correctly" %  (snp[3],snp[0])
-                        elif ref[0] == snp[4]:
-                            toSwitch.append(snp[0])
-                            newData = np.array(["%i"%(1-int(iii)) for iii in data[i][2]],dtype="S1")
-                            t = data[i]
-                            data[i] = (t[0], t[1],newData,t[3],t[4],t[5])                          
-                            print "snp [%s:%s] is polarized wrong!" %  (snp[3],snp[0])
-                        else: 
-                            pass
-                            #print "snp [%s:%s] is ODD (1)!" %  (snp[3],snp[0])
-                    else: #snp is not polarized correctly
-                        toSwitch.append(snp[0])
-                        #print data[i]
-                        print "snp [%s:%s] is polarized wrong! (2)" %  (snp[3],snp[0])
-                        newData = np.array(["%i"%(1-int(iii)) for iii in data[i][2]],dtype="S1")
-                        t = data[i]
-                        data[i] = (t[0], t[1],newData,t[3],t[4],t[5])
-                        #print data[i]
-                else:
-                    print "cant polarize %s:%s" % (snp[3],snp[0])
-
-        d2=[d for d in data if (np.any(d[2]=="1") and np.any(d[2]=="0")) or int(d[0])==selPos]
-        d3=d2#[d for d in d2 if d[0] == selPos or not np.all(d[2]=="1")]
-
-            
-        file.close()    
-
-
-        nHap=len(d3[0][2])
-        nSNP=len(d3)
-
-        segSites=[d[0] for d in d3]
-        haplotypes=list()
-        for h in range(nHap): haplotypes.append([ d[2][h] for d in d3 ])
-        haplotypes=np.array(haplotypes)
-
-
-        self.type="vcf"
-        self.nHap=nHap
-        self._seg_sites=np.array([int(i) for i in segSites])
-        self.nSegsites=nSNP
-        self._data=haplotypes
-        #self._data=self._data.view(GenArray)
-        #self.haplotypes=np.arange(self.nHap)
-
-
-        #selId=self.get_closest_SNP_from_pos(selPos)
-        try:
-            selId=self.getIDfromPos(selPos)
-        except:
-            raise KeyError(haplotypesToKeep)
-        selSiteData=d3[selId][2]
-        self.selId=selId
-        self.selPos=selPos
-        self.selSiteData=selSiteData
-
-
-        self.parTheta=0
-        self.parRho=0
-        self.nDataSets=1
-        self.length=seqPos[1]-seqPos[0]
-        self.selPos-=seqPos[0]
-        self._seg_sites=np.array([int(i)-seqPos[0] for i in self._seg_sites])
+        
 
     def read_IHS(self,file='ihs/sample.ihshap',snp='ihs/sample.ihsmap'):
         """reads input file as used in the ihs program by voight et al., 2006"""
